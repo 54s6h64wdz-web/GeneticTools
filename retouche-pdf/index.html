@@ -109,6 +109,7 @@ input[type=color].field{padding:3px;flex:none;width:56px}
 .fonts .dot{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:none}
 .fonts small{display:block;color:var(--muted);font-size:12px}
 .fonts .fl{flex:1}
+.seg.al button{height:32px;padding:0 10px}
 .linkbtn{color:var(--accent);font-weight:600;text-decoration:underline;margin-top:6px;font-size:13px}
 .ib.copy{width:34px;height:34px;flex:none;color:var(--muted)}
 .ib.copy:hover{color:var(--text)}
@@ -221,7 +222,7 @@ input[type=color].field{padding:3px;flex:none;width:56px}
 <script type="module">
 import * as pdfjs from './lib/pdf.min.js';
 {
-const BUILD = 3;
+const BUILD = 4;
 const L = window.PDFLib;
 const LIB = new URL('./lib/', location.href).href;
 pdfjs.GlobalWorkerOptions.workerSrc = LIB + 'pdf.worker.min.js';
@@ -483,7 +484,7 @@ function makeBlocks(i, tc) {
       const sameDir = Math.abs(m[0] / hs - cur.u[0]) < 0.01 && Math.abs(m[1] / hs - cur.u[1]) < 0.01;
       if (sameDir && Math.abs(size - cur.size) < 0.05 * cur.size && Math.abs(across) < 0.12 * cur.size && gap > -0.4 * cur.size && gap < 0.9 * cur.size) {
         if (gap > 0.16 * cur.size && !/\s$/.test(cur.text) && !/^\s/.test(it.str)) cur.text += ' ';
-        cur.text += it.str; cur.w = along + it.width;
+        cur.text += it.str; if (it.str.trim()) cur.w = along + it.width;
         if (it.hasEOL) { out.push(cur); cur = null; }
         continue;
       }
@@ -509,14 +510,42 @@ function cur(id) {
   if (b) {
     const e = S.st.edits[id] || {};
     const s = e.s ?? 1;
-    return { id, kind: 'block', b, page: b.page, text: e.text ?? b.text, font: e.font ?? 'doc:' + b.font, s, size: b.size * s,
-      o: [b.m[4] + (e.dx || 0), b.m[5] + (e.dy || 0)], u: b.u, v: b.v, hs: b.hs * s, color: e.color ?? b.color ?? [0, 0, 0], bg: b.bg ?? [255, 255, 255],
+    const c = { id, kind: 'block', b, page: b.page, text: e.text ?? b.text, font: e.font ?? 'doc:' + b.font, s, size: b.size * s,
+      o0: [b.m[4] + (e.dx || 0), b.m[5] + (e.dy || 0)], w0: b.w, align: e.align ?? b.align ?? 'left', autoAlign: e.align === undefined,
+      u: b.u, v: b.v, hs: b.hs * s, color: e.color ?? b.color ?? [0, 0, 0], bg: b.bg ?? [255, 255, 255],
       asc: b.asc, desc: b.desc, changed: !!S.st.edits[id], w: S.layout[id] ?? (b.w * s * ((e.text ?? b.text).length / Math.max(1, b.text.length))) };
+    c.o = alignedOrigin(c, c.w); return c;
   }
   const a = S.st.added.find(x => x.id === id);
-  if (a) return { id, kind: 'added', a, page: a.page, text: a.text, font: a.font, s: 1, size: a.size, o: [a.x, a.y], u: a.u, v: a.v, hs: a.size,
-    color: a.color, bg: null, asc: 0.9, desc: -0.22, changed: true, w: S.layout[id] ?? a.text.length * a.size * 0.5 };
+  if (a) {
+    const c = { id, kind: 'added', a, page: a.page, text: a.text, font: a.font, s: 1, size: a.size, o0: [a.x, a.y], w0: 0, align: a.align || 'left', autoAlign: false,
+      u: a.u, v: a.v, hs: a.size, color: a.color, bg: null, asc: 0.9, desc: -0.22, changed: true, w: S.layout[id] ?? a.text.length * a.size * 0.5 };
+    c.o = alignedOrigin(c, c.w); return c;
+  }
   return null;
+}
+// Calage : le bord choisi (gauche, milieu ou droite) du texte d'origine reste fixe quand la longueur change
+const ALIGN_K = { left: 0, center: 0.5, right: 1 };
+function alignedOrigin(c, W) {
+  const off = (ALIGN_K[c.align] ?? 0) * (c.w0 - W);
+  return [c.o0[0] + c.u[0] * off, c.o0[1] + c.u[1] * off];
+}
+function anchorPoint(c) { const k = (ALIGN_K[c.align] ?? 0) * c.w0; return [c.o0[0] + c.u[0] * k, c.o0[1] + c.u[1] * k]; }
+// Devine l'alignement d'origine d'après les lignes voisines (colonne calée à droite, texte centré…)
+function guessAligns(ids) {
+  const H = ids.map(id => S.blocks.get(id)).filter(b => Math.abs(b.u[1]) < 0.01 && b.u[0] > 0);
+  for (const b of H) {
+    const l = b.m[4], r = l + b.w, cx = l + b.w / 2; let L = 0, R = 0, C = 0;
+    for (const o of H) {
+      if (o === b || Math.abs(o.m[5] - b.m[5]) > 8 * b.size || Math.abs(o.m[5] - b.m[5]) < 0.5 * b.size) continue;
+      const ol = o.m[4], or = ol + o.w;
+      if (Math.abs(ol - l) < 0.8) L++;
+      if (Math.abs(or - r) < 0.8) R++;
+      if (Math.abs(ol + o.w / 2 - cx) < 0.8 && Math.abs(ol - l) >= 0.8) C++;
+    }
+    const numeric = /^[\s\d.,:+\-−()%€$£]+$|\d\s?(€|EUR|\$|%)$/.test(b.text);
+    b.align = R > L && R >= 1 ? 'right' : C > L && C > R && C >= 1 ? 'center' : (R >= 1 && R === L && numeric) ? 'right' : 'left';
+  }
 }
 function fontSpec(val) {
   if (val.startsWith('std:')) return { kind: 'std', name: val.slice(4) };
@@ -808,7 +837,8 @@ async function buildPdf(st) {
         const c = cur(id); if (!c.text) { layout[id] = 0; continue; }
         const spec = fontSpec(c.font), sg = segmentize(c.text, spec);
         layout[id] = sg.w / 1000 * c.hs;
-        const tm = [c.u[0] * c.hs, c.u[1] * c.hs, c.v[0] * c.size, c.v[1] * c.size, c.o[0], c.o[1]];
+        const o = alignedOrigin(c, layout[id]);
+        const tm = [c.u[0] * c.hs, c.u[1] * c.hs, c.v[0] * c.size, c.v[1] * c.size, o[0], o[1]];
         ops.push(L.setFillingRgbColor(c.color[0] / 255, c.color[1] / 255, c.color[2] / 255), L.beginText(), L.setTextMatrix(...tm));
         for (const g of sg.segs) {
           if (g.kind === 'doc' || g.kind === 'up') {
@@ -990,7 +1020,8 @@ function select(id) {
   renderPanel();
 }
 function editorStyle(ed, P, c) {
-  const o = cssPt(P, c.o), ux = cssPt(P, [c.o[0] + c.u[0], c.o[1] + c.u[1]]);
+  const ap = anchorPoint(c), o = cssPt(P, ap), ux = cssPt(P, [ap[0] + c.u[0], ap[1] + c.u[1]]);
+  const shift = c.align === 'right' ? ' translateX(-100%)' : c.align === 'center' ? ' translateX(-50%)' : '';
   const ang = Math.atan2(ux[1] - o[1], ux[0] - o[0]);
   const fpx = c.size * S.scale, asc = c.asc, desc = c.desc;
   const spec = fontSpec(c.font);
@@ -1000,12 +1031,12 @@ function editorStyle(ed, P, c) {
   if (up) css = (spec.kind === 'doc' ? css.replace(/^("[^"]+",)?/, m => m + `"${up.css}",`) : `"${up.css}",` + css);
   const weight = c.font.startsWith('std:') ? (/Bold/.test(spec.name) ? 700 : 400) : up && spec.kind === 'up' ? 400 : (info?.weight || 400);
   const ital = c.font.startsWith('std:') ? /Oblique|Italic/.test(spec.name) : up && spec.kind === 'up' ? false : info?.italic;
-  const bg = c.bg || sampleDisplay(P, o[0] - 2, o[1] - fpx * 0.4);
+  const bg = c.bg || sampleDisplay(P, cssPt(P, c.o)[0] - 2, o[1] - fpx * 0.4);
   Object.assign(ed.style, {
     left: o[0] + 'px', top: (o[1] - asc * fpx) + 'px', height: (asc - desc) * fpx + 'px', lineHeight: (asc - desc) * fpx + 'px',
     fontSize: fpx + 'px', fontFamily: css, fontWeight: weight, fontStyle: ital ? 'italic' : 'normal',
-    color: hexOf(c.color), background: hexOf(bg), minWidth: Math.max(c.w * S.scale, 8) + 'px',
-    transform: Math.abs(ang) > 0.01 ? `rotate(${ang}rad)` : '', transformOrigin: `0 ${asc * fpx}px`
+    color: hexOf(c.color), background: hexOf(bg), minWidth: Math.max(c.w * S.scale, 8) + 'px', textAlign: c.align,
+    transform: ((Math.abs(ang) > 0.01 ? `rotate(${ang}rad)` : '') + shift) || '', transformOrigin: `0 ${asc * fpx}px`
   });
 }
 async function openEditor(id, clientX, clientY) {
@@ -1060,12 +1091,13 @@ function tidy(id) {
   if (e.text === b.text) delete e.text;
   if (!e.dx) delete e.dx; if (!e.dy) delete e.dy; if (e.s === 1) delete e.s;
   if (e.font === 'doc:' + b.font) delete e.font;
+  if (e.align === (b.align || 'left')) delete e.align;
   if (!Object.keys(e).length) delete S.st.edits[id];
 }
 function setProp(id, k, v) {
   pushHist();
   const b = S.blocks.get(id);
-  if (b) { const e = S.st.edits[id] || {}; e[k] = v; S.st.edits[id] = e; if (k !== 'color') tidy(id); if (k === 'color' && e.text === undefined) e.text = e.text; }
+  if (b) { const e = S.st.edits[id] || {}; e[k] = v; S.st.edits[id] = e; if (k !== 'color') tidy(id); }
   else { const a = S.st.added.find(x => x.id === id) || S.st.rects.find(x => x.id === id); if (a) a[k === 's' ? 'size' : k] = v; }
   if (editing?.id === id) { const P = editing.P; editorStyle(editing.ed, P, cur(id)); }
   changed();
@@ -1118,11 +1150,15 @@ function renderPanel() {
   body.innerHTML = `<div class="preview" id="pv"></div><div id="pst">${status}</div>
     <div class="row"><label for="pf">Police</label><select class="field" id="pf">${opts}</select><button class="ib copy" id="pcopy" title="Copier le nom de la police" aria-label="Copier le nom de la police">${COPY_ICON}</button></div>
     <div class="row"><label for="ps">Taille</label><input class="field num" id="ps" type="number" min="2" max="300" step="0.5" value="${fmt(c.size).replace(',', '.')}"><span class="hint">pt</span></div>
+    <div class="row"><label>Calage</label><div class="seg al" role="group" aria-label="Calage du texte">
+      ${[['left', 'Calé à gauche', 'M4 6h16M4 12h10M4 18h13'], ['center', 'Centré', 'M4 6h16M7 12h10M5.5 18h13'], ['right', 'Calé à droite', 'M4 6h16M10 12h10M7 18h13']].map(([k, t, d]) => `<button data-al="${k}" aria-pressed="${c.align === k}" title="${t}" aria-label="${t}"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="${d}"/></svg></button>`).join('')}
+    </div><span class="hint">${c.kind === 'block' && c.autoAlign ? 'détecté' : ''}</span></div>
     <div class="row"><label for="pc">Couleur</label><input type="color" class="field" id="pc" value="${hexOf(c.color)}"></div>
     <div class="btns">${c.kind === 'block' && c.changed ? '<button class="btn" id="preset">Rétablir l’original</button>' : ''}<button class="btn danger" id="pdel">${c.kind === 'block' ? 'Effacer ce texte' : 'Supprimer'}</button></div>`;
   $('#pv').textContent = editing?.id === id ? editing.ed.textContent : (c.text || '(effacé)');
   $('#pf').value = c.font;
   $('#pf').onchange = e => setProp(id, 'font', e.target.value);
+  body.querySelectorAll('[data-al]').forEach(bt => bt.onclick = () => setProp(id, 'align', bt.dataset.al));
   $('#pcopy').onclick = () => copyText(fontLabel($('#pf').value));
   $('#ps').onchange = e => { const v = parseFloat(e.target.value); if (v > 0) setProp(id, 's', c.kind === 'block' ? v / c.b.size : v); };
   $('#pc').onchange = e => setProp(id, 'color', rgbOf(e.target.value));
@@ -1328,6 +1364,7 @@ async function openBytes(bytes, name, isSample = false) {
     for (const P of S.pages) {
       const tc = await P.pg.getTextContent();
       for (const b of makeBlocks(P.i, tc)) { S.blocks.set(b.id, b); P.blocks.push(b.id); }
+      guessAligns(P.blocks);
       refreshHitsFor(P);
     }
     updateHist(); renderPanel(); renderFonts(); markFound();

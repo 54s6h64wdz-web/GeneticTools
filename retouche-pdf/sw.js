@@ -1,6 +1,6 @@
 // Service worker : Retouche s'ouvre instantanément, même hors connexion.
 // À chaque mise à jour : même numéro que BUILD dans index.html et que version.json.
-const CACHE = 'retouche-build-3';
+const CACHE = 'retouche-build-4';
 const ASSETS = ['./', './index.html', './manifest.webmanifest', './exemple.pdf',
   './lib/pdf.min.js', './lib/pdf.worker.min.js', './lib/pdf-lib.min.js',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png'];
