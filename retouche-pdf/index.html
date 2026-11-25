@@ -108,6 +108,10 @@ input[type=color].field{padding:3px;flex:none;width:56px}
 .fonts li{display:flex;gap:8px;align-items:flex-start;font-size:13px}
 .fonts .dot{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:none}
 .fonts small{display:block;color:var(--muted);font-size:12px}
+.fonts .fl{flex:1}
+.ib.copy{width:34px;height:34px;flex:none;color:var(--muted)}
+.ib.copy:hover{color:var(--text)}
+.fonts .ib.copy{margin-top:-4px}
 .find .field{width:100%}
 .check{display:flex;gap:8px;align-items:center;font-size:13px;color:var(--muted);margin-top:10px}
 .check input{width:18px;height:18px;accent-color:var(--accent)}
@@ -209,7 +213,7 @@ input[type=color].field{padding:3px;flex:none;width:56px}
 <script type="module">
 import * as pdfjs from './lib/pdf.min.js';
 {
-const BUILD = 1;
+const BUILD = 2;
 const L = window.PDFLib;
 const LIB = new URL('./lib/', location.href).href;
 pdfjs.GlobalWorkerOptions.workerSrc = LIB + 'pdf.worker.min.js';
@@ -890,13 +894,14 @@ function renderPanel() {
   const opts = docFonts.map(f => `<option value="doc:${esc(f.id)}">${esc(f.label)}${f.mode === 'sub' ? ' (remplacée)' : ''}</option>`).join('')
     + `<optgroup label="Polices standard">${STD_LIST.map(n => `<option value="std:${n}">${STD_LABEL(n)}</option>`).join('')}</optgroup>`;
   body.innerHTML = `<div class="preview" id="pv"></div><div id="pst">${status}</div>
-    <div class="row"><label for="pf">Police</label><select class="field" id="pf">${opts}</select></div>
+    <div class="row"><label for="pf">Police</label><select class="field" id="pf">${opts}</select><button class="ib copy" id="pcopy" title="Copier le nom de la police" aria-label="Copier le nom de la police">${COPY_ICON}</button></div>
     <div class="row"><label for="ps">Taille</label><input class="field num" id="ps" type="number" min="2" max="300" step="0.5" value="${fmt(c.size).replace(',', '.')}"><span class="hint">pt</span></div>
     <div class="row"><label for="pc">Couleur</label><input type="color" class="field" id="pc" value="${hexOf(c.color)}"></div>
     <div class="btns">${c.kind === 'block' && c.changed ? '<button class="btn" id="preset">Rétablir l’original</button>' : ''}<button class="btn danger" id="pdel">${c.kind === 'block' ? 'Effacer ce texte' : 'Supprimer'}</button></div>`;
   $('#pv').textContent = editing?.id === id ? editing.ed.textContent : (c.text || '(effacé)');
   $('#pf').value = c.font;
   $('#pf').onchange = e => setProp(id, 'font', e.target.value);
+  $('#pcopy').onclick = () => copyText(fontLabel($('#pf').value));
   $('#ps').onchange = e => { const v = parseFloat(e.target.value); if (v > 0) setProp(id, 's', c.kind === 'block' ? v / c.b.size : v); };
   $('#pc').onchange = e => setProp(id, 'color', rgbOf(e.target.value));
   $('#pdel').onclick = removeSel;
@@ -914,6 +919,12 @@ function statusHTML(c, text) {
   if (sg.unknown.length) h += `<div class="chip warn"><span class="dot"></span><div>${sg.unknown.map(x => '« ' + esc(x) + ' »').join(' ')} ne peut pas être écrit (remplacé par « ? »).</div></div>`;
   return h;
 }
+async function copyText(t) {
+  try { await navigator.clipboard.writeText(t); }
+  catch { const ta = document.createElement('textarea'); ta.value = t; ta.style.position = 'fixed'; ta.style.opacity = '0'; document.body.append(ta); ta.select(); document.execCommand('copy'); ta.remove(); }
+  toast('« ' + t + ' » copié');
+}
+const COPY_ICON = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2"/><path d="M5 15V5a1 1 0 0 1 1-1h9"/></svg>';
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 function renderFonts() {
   const list = [...S.fonts.values()];
@@ -921,8 +932,9 @@ function renderFonts() {
   if (!list.length) { el.innerHTML = '<li class="hint">Aucun texte trouvé sur les pages chargées (PDF scanné ?).</li>'; return; }
   el.innerHTML = list.map(f => {
     const ok = f.mode === 'orig' || f.mode === 'same';
-    return `<li><span class="dot" style="background:${ok ? 'var(--ok)' : 'var(--warn)'}"></span><div>${esc(f.label)}<small>${f.mode === 'orig' ? 'Intégrée : modifiable avec la même police' : f.mode === 'same' ? 'Standard : modifiable à l’identique' : 'Remplacée par ' + STD_LABEL(f.std)}</small></div></li>`;
+    return `<li><span class="dot" style="background:${ok ? 'var(--ok)' : 'var(--warn)'}"></span><div class="fl">${esc(f.label)}<small>${f.mode === 'orig' ? 'Intégrée : modifiable avec la même police' : f.mode === 'same' ? 'Standard : modifiable à l’identique' : 'Remplacée par ' + STD_LABEL(f.std)}</small></div><button class="ib copy" data-copy="${esc(f.label)}" title="Copier « ${esc(f.label)} »" aria-label="Copier le nom">${COPY_ICON}</button></li>`;
   }).join('');
+  el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copyText(b.dataset.copy));
 }
 
 /* ================= Rechercher / remplacer ================= */
