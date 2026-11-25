@@ -109,6 +109,7 @@ input[type=color].field{padding:3px;flex:none;width:56px}
 .fonts .dot{width:8px;height:8px;border-radius:50%;margin-top:6px;flex:none}
 .fonts small{display:block;color:var(--muted);font-size:12px}
 .fonts .fl{flex:1}
+.linkbtn{color:var(--accent);font-weight:600;text-decoration:underline;margin-top:6px;font-size:13px}
 .ib.copy{width:34px;height:34px;flex:none;color:var(--muted)}
 .ib.copy:hover{color:var(--text)}
 .fonts .ib.copy{margin-top:-4px}
@@ -187,6 +188,13 @@ input[type=color].field{padding:3px;flex:none;width:56px}
       <div class="btns"><button class="btn" id="fgo" disabled>Remplacer tout</button><span class="hint" id="fcount" style="align-self:center"></span></div>
     </section>
     <section>
+      <h2>Mes polices</h2>
+      <p class="hint">Importe les fichiers de tes polices (.otf, .ttf, .ttc, plusieurs d’un coup) : l’outil reconnaît tout seul celles du PDF et s’en sert pour les lettres qui manquent. Elles restent enregistrées sur cet appareil.</p>
+      <ul class="fonts" id="userFonts" style="margin-top:10px"></ul>
+      <div class="btns"><button class="btn" id="fontAdd">Importer des polices</button></div>
+      <input type="file" id="fontFile" accept=".otf,.ttf,.ttc,.otc,font/otf,font/ttf,font/collection" multiple hidden>
+    </section>
+    <section>
       <h2>Polices du document</h2>
       <ul class="fonts" id="fontList"><li class="hint">Elles apparaissent quand les pages sont chargées.</li></ul>
     </section>
@@ -197,7 +205,7 @@ input[type=color].field{padding:3px;flex:none;width:56px}
   </aside>
 </div>
 
-<div id="drop"><div>Dépose ton PDF</div></div>
+<div id="drop"><div>Dépose ton PDF ou tes polices</div></div>
 <div class="sheet" id="sheet" hidden>
   <div class="box" role="dialog" aria-modal="true" aria-labelledby="shT">
     <h3 id="shT">Enregistrer le PDF</h3>
@@ -213,7 +221,7 @@ input[type=color].field{padding:3px;flex:none;width:56px}
 <script type="module">
 import * as pdfjs from './lib/pdf.min.js';
 {
-const BUILD = 2;
+const BUILD = 3;
 const L = window.PDFLib;
 const LIB = new URL('./lib/', location.href).href;
 pdfjs.GlobalWorkerOptions.workerSrc = LIB + 'pdf.worker.min.js';
@@ -447,6 +455,7 @@ function resolveFont(page, fid, samples) {
   const fam = info.std.startsWith('Times') ? 'serif' : info.std.startsWith('Courier') ? 'monospace' : 'sans-serif';
   const loaded = fo && !fo.isType3Font && !fo.missingFile && fo.loadedName ? `"${fo.loadedName}",` : '';
   info.css = loaded + STD_CSS(info.std).replace(/,(sans-)?serif$|,monospace$/, '') + ',' + fam;
+  info.user = userMatch(info);
   info.weight = /bold|black|heavy|semibold/i.test(info.std + pname) ? 700 : 400;
   info.italic = /italic|oblique/i.test(info.std + pname);
   S.fonts.set(fid, info);
@@ -511,12 +520,15 @@ function cur(id) {
 }
 function fontSpec(val) {
   if (val.startsWith('std:')) return { kind: 'std', name: val.slice(4) };
+  if (val.startsWith('up:')) { const U = UF.get(val.slice(3)); return U ? { kind: 'up', U, std: U.std } : { kind: 'std', name: 'Helvetica' }; }
   const info = S.fonts.get(val.slice(4));
-  if (info && info.mode === 'orig' && info.group?.length) return { kind: 'doc', info };
+  if (info && info.mode === 'orig' && info.group?.length) return { kind: 'doc', info, U: info.user || null };
+  if (info?.user) return { kind: 'up', U: info.user, info, std: info.std };
   return { kind: 'std', name: info?.std || 'Helvetica', info };
 }
 function fontLabel(val) {
   if (val.startsWith('std:')) return STD_LABEL(val.slice(4));
+  if (val.startsWith('up:')) return UF.get(val.slice(3))?.label || 'Police importée';
   return S.fonts.get(val.slice(4))?.label || 'Police';
 }
 
@@ -533,27 +545,230 @@ function canStd(name, ch) {
 // Découpe le texte en segments : police d'origine tant qu'elle a les caractères, sinon police de remplacement
 function segmentize(text, spec) {
   const chars = [...text.replace(/[\t\r\n]/g, ' ')];
-  const segs = [], missing = new Set(), unknown = new Set();
-  const fb = spec.kind === 'doc' ? spec.info.std : spec.name;
+  const segs = [], missing = new Set(), viaUser = new Set(), viaStd = new Set(), unknown = new Set();
+  const fb = spec.kind === 'std' ? spec.name : (spec.info?.std || spec.std || 'Helvetica');
+  const U = spec.kind === 'up' ? spec.U : spec.U || null;
   const add = (kind, piece) => {
     let last = segs[segs.length - 1];
-    const lf = kind === 'doc' ? piece.lf : null;
-    if (!last || last.kind !== kind || last.lib !== lf) { last = { kind, parts: [], str: '', w: 0, name: kind === 'std' ? fb : null, lib: lf }; segs.push(last); }
-    if (kind === 'doc') {
-      if (piece.gap) last.parts.push(-piece.w);
-      else if (typeof last.parts[last.parts.length - 1] === 'string') last.parts[last.parts.length - 1] += piece.hex;
-      else last.parts.push(piece.hex);
-      last.w += piece.w;
-    } else { last.str += piece; last.w = stdFont(fb).widthOfTextAtSize(last.str, 1000); }
+    const lf = kind === 'doc' ? piece.lf : kind === 'up' ? U : null;
+    if (!last || last.kind !== kind || last.lib !== lf) { last = { kind, parts: [], str: '', w: 0, name: kind === 'std' ? fb : null, lib: lf, glyphs: [] }; segs.push(last); }
+    if (kind === 'std') { last.str += piece; last.w = stdFont(fb).widthOfTextAtSize(last.str, 1000); return; }
+    if (piece.gap) last.parts.push(-piece.w);
+    else if (typeof last.parts[last.parts.length - 1] === 'string') last.parts[last.parts.length - 1] += piece.hex;
+    else last.parts.push(piece.hex);
+    if (kind === 'up' && piece.g) last.glyphs.push([piece.g, piece.ch]);
+    last.w += piece.w;
   };
   for (let i = 0; i < chars.length;) {
-    if (spec.kind === 'doc') { const r = encAt(spec.info.group, chars, i); if (r) { add('doc', r); i += r.len; continue; } missing.add(chars[i]); }
-    let ch = chars[i];
-    if (!canStd(fb, ch)) { const a = ALT[ch]; if (a && [...a].every(c => canStd(fb, c))) ch = a; else { unknown.add(chars[i]); ch = '?'; } }
+    const ch0 = chars[i];
+    if (spec.kind === 'doc') { const r = encAt(spec.info.group, chars, i); if (r) { add('doc', r); i += r.len; continue; } if (ch0.trim()) missing.add(ch0); }
+    if (U) {
+      const r = upAt(U, ch0);
+      if (r) { add('up', r); if (spec.kind === 'doc' && ch0.trim()) viaUser.add(ch0); i++; continue; }
+      if (spec.kind === 'up' && ch0.trim()) missing.add(ch0);
+    }
+    let ch = ch0;
+    if (!canStd(fb, ch)) { const a = ALT[ch]; if (a && [...a].every(c => canStd(fb, c))) ch = a; else { unknown.add(ch0); ch = '?'; } }
+    if (ch0.trim() && (spec.kind !== 'std')) viaStd.add(ch0);
     add('std', ch); i++;
   }
-  return { segs, missing: [...missing].filter(c => c.trim()), unknown: [...unknown], w: segs.reduce((s, g) => s + g.w, 0) };
+  return { segs, missing: [...missing], viaUser: [...viaUser], viaStd: [...viaStd].filter(c => !unknown.has(c)), unknown: [...unknown], w: segs.reduce((s, g) => s + g.w, 0) };
 }
+
+/* ================= Polices importées (OTF / TTF / TTC) ================= */
+const UF = new Map();
+function upAt(U, ch) {
+  const cp = ch.codePointAt(0);
+  let g = U.cmap.get(cp);
+  if (!g && ALT[ch] && ALT[ch].length === 1) g = U.cmap.get(ALT[ch].codePointAt(0));
+  if (g) return { hex: g.toString(16).toUpperCase().padStart(4, '0'), g, ch, w: U.adv[g] * 1000 / U.upm };
+  if (/\s/.test(ch)) return { gap: true, w: 260 };
+  return null;
+}
+// Lit une police au format sfnt (TrueType ou OpenType/CFF) à partir de l'offset donné
+function parseSfnt(buf, off) {
+  const dv = new DataView(buf);
+  const tag = o => String.fromCharCode(dv.getUint8(o), dv.getUint8(o + 1), dv.getUint8(o + 2), dv.getUint8(o + 3));
+  const n = dv.getUint16(off + 4), tables = {};
+  for (let i = 0; i < n; i++) { const e = off + 12 + i * 16; tables[tag(e)] = { sum: dv.getUint32(e + 4), off: dv.getUint32(e + 8), len: dv.getUint32(e + 12) }; }
+  for (const t of ['cmap', 'head', 'hhea', 'hmtx', 'maxp']) if (!tables[t]) throw new Error('table ' + t + ' absente');
+  if (tables.CFF2) throw new Error('format CFF2 non géré');
+  const T = t => tables[t].off;
+  const upm = dv.getUint16(T('head') + 18);
+  const bbox = [0, 2, 4, 6].map(k => Math.round(dv.getInt16(T('head') + 36 + k) * 1000 / upm));
+  const asc = dv.getInt16(T('hhea') + 4), desc = dv.getInt16(T('hhea') + 6), numH = dv.getUint16(T('hhea') + 34);
+  const numGlyphs = dv.getUint16(T('maxp') + 4);
+  const adv = new Uint16Array(numGlyphs); let last = 0;
+  for (let g = 0; g < numGlyphs; g++) { if (g < numH) last = dv.getUint16(T('hmtx') + g * 4); adv[g] = last; }
+  const cmap = new Map(), c0 = T('cmap'), nt = dv.getUint16(c0 + 2);
+  let best = -1, bestScore = -1;
+  for (let i = 0; i < nt; i++) {
+    const pid = dv.getUint16(c0 + 4 + i * 8), eid = dv.getUint16(c0 + 6 + i * 8), so = dv.getUint32(c0 + 8 + i * 8), fmt = dv.getUint16(c0 + so);
+    const sc = pid === 3 && eid === 10 && fmt === 12 ? 5 : pid === 0 && fmt === 12 ? 4 : pid === 3 && eid === 1 && fmt === 4 ? 3 : pid === 0 && fmt === 4 ? 2 : pid === 3 && eid === 0 && fmt === 4 ? 1 : -1;
+    if (sc > bestScore) { bestScore = sc; best = c0 + so; }
+  }
+  if (bestScore < 0) throw new Error('table des caractères illisible');
+  const symbolic = bestScore === 1;
+  if (dv.getUint16(best) === 4) {
+    const segX2 = dv.getUint16(best + 6), ends = best + 14, starts = ends + segX2 + 2, deltas = starts + segX2, ros = deltas + segX2;
+    for (let k = 0; k < segX2 / 2; k++) {
+      const end = dv.getUint16(ends + k * 2), start = dv.getUint16(starts + k * 2), delta = dv.getInt16(deltas + k * 2), ro = dv.getUint16(ros + k * 2);
+      if (start === 0xFFFF) break;
+      for (let c = start; c <= end; c++) {
+        let g;
+        if (!ro) g = (c + delta) & 0xFFFF;
+        else { g = dv.getUint16(ros + k * 2 + ro + (c - start) * 2); if (g) g = (g + delta) & 0xFFFF; }
+        if (g && g < numGlyphs) cmap.set(symbolic && c >= 0xF000 ? c - 0xF000 : c, g);
+      }
+    }
+  } else {
+    const ng = dv.getUint32(best + 12);
+    for (let i = 0; i < ng; i++) { const e = best + 16 + i * 12, a = dv.getUint32(e), z = dv.getUint32(e + 4), g0 = dv.getUint32(e + 8); if (z - a > 200000) continue; for (let c = a; c <= z; c++) if (g0 + c - a < numGlyphs) cmap.set(c, g0 + c - a); }
+  }
+  const names = {};
+  if (tables.name) {
+    const n0 = T('name'), cnt = dv.getUint16(n0 + 2), so = n0 + dv.getUint16(n0 + 4);
+    for (let i = 0; i < cnt; i++) {
+      const r = n0 + 6 + i * 12, pid = dv.getUint16(r), lang = dv.getUint16(r + 4), nid = dv.getUint16(r + 6), len = dv.getUint16(r + 8), o = dv.getUint16(r + 10);
+      if (![1, 2, 4, 6, 16, 17].includes(nid)) continue;
+      let str = '';
+      if (pid === 3 || pid === 0) for (let k = 0; k + 1 < len; k += 2) str += String.fromCharCode(dv.getUint16(so + o + k));
+      else if (pid === 1) for (let k = 0; k < len; k++) str += String.fromCharCode(dv.getUint8(so + o + k));
+      else continue;
+      const pri = pid === 3 && (lang === 0x409 || lang === 0x40C) ? 3 : pid === 3 ? 2 : 1;
+      if (!names[nid] || names[nid].pri < pri) names[nid] = { str: str.trim(), pri };
+    }
+  }
+  const nm = k => names[k]?.str || '';
+  let capH = Math.round(asc * 0.7), weight = 400, italic = false, angle = 0;
+  if (tables['OS/2']) { const o = T('OS/2'), ver = dv.getUint16(o); weight = dv.getUint16(o + 4); italic = !!(dv.getUint16(o + 62) & 1); if (ver >= 2 && tables['OS/2'].len >= 90) capH = dv.getInt16(o + 88) || capH; }
+  if (tables.post) angle = dv.getInt32(T('post') + 4) / 65536;
+  const ps = nm(6).replace(/\s/g, ''), family = nm(16) || nm(1), style = nm(17) || nm(2);
+  const label = nm(4) || (family + ' ' + style).trim() || ps || 'Police importée';
+  return { ps: ps || normName(label), label, family, style, names: [nm(6), nm(4), family + style, family + '-' + style, nm(1) + nm(2)].map(normName).filter(Boolean),
+    upm, bbox, asc: Math.round(asc * 1000 / upm), desc: Math.round(desc * 1000 / upm), capH: Math.round(capH * 1000 / upm),
+    adv, cmap, numGlyphs, cff: !!tables['CFF '], weight, italic: italic || angle !== 0, angle, tables, off,
+    std: guessStd(ps + ' ' + label, weight >= 600, italic || angle !== 0) };
+}
+// Reconstruit un fichier autonome (utile pour les collections .ttc)
+function standalone(buf, off, tables) {
+  const tags = Object.keys(tables).sort(), n = tags.length;
+  let size = 12 + 16 * n; for (const t of tags) size += (tables[t].len + 3) & ~3;
+  const out = new Uint8Array(size), dv = new DataView(out.buffer), src = new Uint8Array(buf);
+  dv.setUint32(0, new DataView(buf).getUint32(off)); dv.setUint16(4, n);
+  let es = 1, p2 = 0; while (es * 2 <= n) { es *= 2; p2++; }
+  dv.setUint16(6, es * 16); dv.setUint16(8, p2); dv.setUint16(10, n * 16 - es * 16);
+  let pos = 12 + 16 * n;
+  tags.forEach((t, i) => {
+    const e = 12 + i * 16, tb = tables[t];
+    for (let k = 0; k < 4; k++) dv.setUint8(e + k, t.charCodeAt(k));
+    dv.setUint32(e + 4, tb.sum); dv.setUint32(e + 8, pos); dv.setUint32(e + 12, tb.len);
+    out.set(src.subarray(tb.off, tb.off + tb.len), pos); pos += (tb.len + 3) & ~3;
+  });
+  return out.buffer;
+}
+// Découpe un fichier en polices (une seule, ou plusieurs pour un .ttc)
+function splitFontFile(buf) {
+  const dv = new DataView(buf), sig = dv.getUint32(0);
+  if (sig === 0x74746366) { // 'ttcf'
+    const n = dv.getUint32(8), out = [];
+    for (let i = 0; i < n; i++) { const off = dv.getUint32(12 + i * 4); const f = parseSfnt(buf, off); out.push(standalone(buf, off, f.tables)); }
+    return out;
+  }
+  if (sig === 0x00010000 || sig === 0x4F54544F || sig === 0x74727565) return [buf];
+  if (sig === 0x774F4646 || sig === 0x774F4632) throw new Error('format web (WOFF) non géré : prends le .otf ou le .ttf');
+  throw new Error('ce n’est pas un fichier de police');
+}
+async function registerUserFont(id, bytes, file) {
+  const f = parseSfnt(bytes, 0);
+  Object.assign(f, { id, bytes, file, css: 'up_' + id });
+  try { const ff = new FontFace(f.css, bytes.slice(0)); await ff.load(); document.fonts.add(ff); } catch {}
+  UF.set(id, f);
+  return f;
+}
+// Intègre une police importée dans le PDF : Type0 / Identity-H, code = numéro de glyphe
+function embedUserFont(doc, e) {
+  const { U, ref, used } = e, ctx = doc.context;
+  const bytes = new Uint8Array(U.bytes);
+  const file = ctx.register(ctx.flateStream(bytes, U.cff ? { Subtype: 'OpenType' } : { Length1: bytes.length }));
+  const ps = (U.ps || 'Police').replace(/[^A-Za-z0-9+-]/g, '') || 'Police';
+  const fd = ctx.register(ctx.obj({ Type: 'FontDescriptor', FontName: ps, Flags: 4 | (U.italic ? 64 : 0), FontBBox: U.bbox, ItalicAngle: U.angle,
+    Ascent: U.asc, Descent: U.desc, CapHeight: U.capH, StemV: U.weight >= 600 ? 140 : 80, [U.cff ? 'FontFile3' : 'FontFile2']: file }));
+  const gids = [...used.keys()].sort((a, b) => a - b), W = [];
+  for (const g of gids) W.push(g, [Math.round(U.adv[g] * 1000 / U.upm)]);
+  const cid = { Type: 'Font', Subtype: U.cff ? 'CIDFontType0' : 'CIDFontType2', BaseFont: ps,
+    CIDSystemInfo: { Registry: L.PDFString.of('Adobe'), Ordering: L.PDFString.of('Identity'), Supplement: 0 }, FontDescriptor: fd, DW: 1000, W };
+  if (!U.cff) cid.CIDToGIDMap = 'Identity';
+  const cidRef = ctx.register(ctx.obj(cid));
+  const u16 = ch => [...ch].map(c => { const cp = c.codePointAt(0); if (cp < 0x10000) return cp.toString(16).padStart(4, '0'); const v = cp - 0x10000; return ((0xD800 + (v >> 10)).toString(16) + (0xDC00 + (v & 0x3FF)).toString(16)); }).join('').toUpperCase();
+  const lines = gids.map(g => `<${g.toString(16).toUpperCase().padStart(4, '0')}> <${u16(used.get(g))}>`);
+  let body = '';
+  for (let i = 0; i < lines.length; i += 100) { const part = lines.slice(i, i + 100); body += `${part.length} beginbfchar\n${part.join('\n')}\nendbfchar\n`; }
+  const cmapTxt = `/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n/CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n${body}endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend`;
+  const tu = ctx.register(ctx.flateStream(new TextEncoder().encode(cmapTxt)));
+  ctx.assign(ref, ctx.obj({ Type: 'Font', Subtype: 'Type0', BaseFont: ps, Encoding: 'Identity-H', DescendantFonts: [cidRef], ToUnicode: tu }));
+}
+// Trouve, parmi les polices importées, celle qui correspond à une police du document (nom, puis largeurs des lettres)
+function userMatch(info) {
+  const bare = normName((info.pdfName || '').replace(/^[A-Z]{6}\+/, ''));
+  let best = null, bestScore = 0;
+  for (const U of UF.values()) {
+    const nameHit = !!bare && U.names.some(n => n === bare || n === bare.replace(/(regular|roman|book|normal)$/, '') || n.replace(/(regular|roman|book|normal)$/, '') === bare);
+    let cmp = 0, ok = 0;
+    for (const lf of info.group || []) for (const [ch, hex] of lf.enc.map) {
+      if ([...ch].length !== 1) continue;
+      const w = lf.enc.widthOf(hex); if (!(w > 0)) continue;
+      const g = U.cmap.get(ch.codePointAt(0)); if (!g) continue;
+      cmp++; if (Math.abs(U.adv[g] * 1000 / U.upm - w) <= 2.5) ok++;
+    }
+    const ws = cmp ? ok / cmp : 0;
+    let score = 0;
+    if (nameHit && (cmp < 5 || ws >= 0.7)) score = 2 + ws;
+    else if (cmp >= 8 && ws >= 0.95) score = 1 + ws;
+    if (score > bestScore) { bestScore = score; best = U; }
+  }
+  return best;
+}
+function rematchFonts() { for (const info of S.fonts.values()) info.user = userMatch(info); }
+
+/* ---------- Stockage local des polices importées (IndexedDB) ---------- */
+const fontDB = (() => {
+  let dbp = null;
+  const open = () => (dbp ||= new Promise((res, rej) => { const r = indexedDB.open('retouche', 1); r.onupgradeneeded = () => r.result.createObjectStore('fonts', { keyPath: 'id' }); r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); }));
+  const tx = async (mode, fn) => { const db = await open(); return new Promise((res, rej) => { const t = db.transaction('fonts', mode); const st = t.objectStore('fonts'); const out = fn(st); t.oncomplete = () => res(out?.result ?? out); t.onerror = () => rej(t.error); }); };
+  return { all: () => tx('readonly', st => st.getAll()), put: v => tx('readwrite', st => st.put(v)), del: id => tx('readwrite', st => st.delete(id)) };
+})();
+async function addFontFiles(files) {
+  let added = 0; const errors = [];
+  for (const file of files) {
+    try {
+      const faces = splitFontFile(await file.arrayBuffer());
+      for (let k = 0; k < faces.length; k++) {
+        const probe = parseSfnt(faces[k], 0);
+        const id = normName(probe.ps || probe.label) || ('f' + Date.now() + k);
+        await registerUserFont(id, faces[k], file.name);
+        try { await fontDB.put({ id, bytes: faces[k], file: file.name }); } catch {}
+        added++;
+      }
+    } catch (e) { errors.push(file.name + ' : ' + e.message); }
+  }
+  rematchFonts(); renderFonts(); renderUserFonts(); renderPanel();
+  if (hasEdits(S.st)) changed();
+  const hits = [...S.fonts.values()].filter(f => f.user).length;
+  toast((added ? added + ' police' + (added > 1 ? 's' : '') + ' importée' + (added > 1 ? 's' : '') + (hits ? ' · ' + hits + ' reconnue' + (hits > 1 ? 's' : '') + ' dans ce PDF' : ' · aucune ne correspond à ce PDF') : 'Aucune police importée') + (errors.length ? ' — ' + errors.join(' ; ') : ''), 6000);
+}
+async function removeUserFont(id) {
+  UF.delete(id); try { await fontDB.del(id); } catch {}
+  rematchFonts(); renderFonts(); renderUserFonts(); renderPanel(); if (hasEdits(S.st)) changed();
+}
+function renderUserFonts() {
+  const el = $('#userFonts'); const list = [...UF.values()].sort((a, b) => a.label.localeCompare(b.label));
+  if (!list.length) { el.innerHTML = '<li class="hint">Aucune pour l’instant.</li>'; return; }
+  const used = new Set([...S.fonts.values()].map(f => f.user?.id).filter(Boolean));
+  el.innerHTML = list.map(U => `<li><span class="dot" style="background:${used.has(U.id) ? 'var(--ok)' : 'var(--line)'}"></span><div class="fl">${esc(U.label)}<small>${used.has(U.id) ? 'Utilisée pour ce PDF' : esc(U.file)}</small></div><button class="ib copy" data-del="${esc(U.id)}" title="Retirer" aria-label="Retirer ${esc(U.label)}"><svg width="15" height="15" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M6 6l12 12M18 6 6 18"/></svg></button></li>`).join('');
+  el.querySelectorAll('[data-del]').forEach(b => b.onclick = () => removeUserFont(b.dataset.del));
+}
+const isFontFile = f => /\.(otf|ttf|ttc|otc|woff2?)$/i.test(f.name) || /font/.test(f.type);
 
 /* ================= Construction du PDF modifié ================= */
 function hasEdits(st) { return Object.keys(st.edits).length || st.added.length || st.rects.length; }
@@ -565,7 +780,7 @@ async function buildPdf(st) {
   for (const r of st.rects) bucket(r.page).rects.push(r);
   for (const id of Object.keys(st.edits)) { const b = S.blocks.get(id); if (b) bucket(b.page).items.push(id); }
   for (const a of st.added) bucket(a.page).items.push(a.id);
-  const stdDoc = {};
+  const stdDoc = {}, userDoc = {};
   const saved = S.st; S.st = st; // cur() lit l'état demandé
   try {
     for (const [i, list] of byPage) {
@@ -573,9 +788,11 @@ async function buildPdf(st) {
       page.node.normalize();
       const keys = new Map(), ops = [L.pushGraphicsState()];
       const key = seg => {
-        const k = seg.kind === 'doc' ? 'd' + seg.lib.tag : 's' + seg.name;
+        const k = seg.kind === 'doc' ? 'd' + seg.lib.tag : seg.kind === 'up' ? 'u' + seg.lib.id : 's' + seg.name;
         if (!keys.has(k)) {
-          const ref = seg.kind === 'doc' ? L.PDFRef.of(seg.lib.n, seg.lib.g) : (stdDoc[seg.name] ||= doc.embedStandardFont(seg.name)).ref;
+          const ref = seg.kind === 'doc' ? L.PDFRef.of(seg.lib.n, seg.lib.g)
+            : seg.kind === 'up' ? (userDoc[seg.lib.id] ||= { U: seg.lib, ref: doc.context.nextRef(), used: new Map() }).ref
+            : (stdDoc[seg.name] ||= doc.embedStandardFont(seg.name)).ref;
           keys.set(k, page.node.newFontDictionary('GT', ref));
         }
         return keys.get(k);
@@ -594,8 +811,9 @@ async function buildPdf(st) {
         const tm = [c.u[0] * c.hs, c.u[1] * c.hs, c.v[0] * c.size, c.v[1] * c.size, c.o[0], c.o[1]];
         ops.push(L.setFillingRgbColor(c.color[0] / 255, c.color[1] / 255, c.color[2] / 255), L.beginText(), L.setTextMatrix(...tm));
         for (const g of sg.segs) {
-          if (g.kind === 'doc') {
+          if (g.kind === 'doc' || g.kind === 'up') {
             ops.push(L.setFontAndSize(key(g), 1));
+            if (g.kind === 'up') for (const [gid, ch] of g.glyphs) userDoc[g.lib.id].used.set(gid, ch);
             ops.push(L.PDFOperator.of('TJ', [doc.context.obj(g.parts.map(p => typeof p === 'string' ? L.PDFHexString.of(p) : p))]));
           } else {
             const f = (stdDoc[g.name] ||= doc.embedStandardFont(g.name));
@@ -608,6 +826,7 @@ async function buildPdf(st) {
       page.pushOperators(...ops);
     }
   } finally { S.st = saved; }
+  for (const k in userDoc) embedUserFont(doc, userDoc[k]);
   return { bytes: await doc.save(), layout };
 }
 
@@ -776,9 +995,11 @@ function editorStyle(ed, P, c) {
   const fpx = c.size * S.scale, asc = c.asc, desc = c.desc;
   const spec = fontSpec(c.font);
   const info = spec.kind === 'doc' ? spec.info : (spec.info || null);
-  const css = c.font.startsWith('std:') ? STD_CSS(spec.name) : (info?.css || STD_CSS(spec.name));
-  const weight = c.font.startsWith('std:') ? (/Bold/.test(spec.name) ? 700 : 400) : (info?.weight || 400);
-  const ital = c.font.startsWith('std:') ? /Oblique|Italic/.test(spec.name) : info?.italic;
+  const up = spec.kind === 'up' ? spec.U : spec.U;
+  let css = c.font.startsWith('std:') ? STD_CSS(spec.name) : (info?.css || STD_CSS(spec.std || spec.name || 'Helvetica'));
+  if (up) css = (spec.kind === 'doc' ? css.replace(/^("[^"]+",)?/, m => m + `"${up.css}",`) : `"${up.css}",` + css);
+  const weight = c.font.startsWith('std:') ? (/Bold/.test(spec.name) ? 700 : 400) : up && spec.kind === 'up' ? 400 : (info?.weight || 400);
+  const ital = c.font.startsWith('std:') ? /Oblique|Italic/.test(spec.name) : up && spec.kind === 'up' ? false : info?.italic;
   const bg = c.bg || sampleDisplay(P, o[0] - 2, o[1] - fpx * 0.4);
   Object.assign(ed.style, {
     left: o[0] + 'px', top: (o[1] - asc * fpx) + 'px', height: (asc - desc) * fpx + 'px', lineHeight: (asc - desc) * fpx + 'px',
@@ -892,6 +1113,7 @@ function renderPanel() {
   const status = statusHTML(c, editing?.id === id ? editing.ed.textContent : c.text);
   const docFonts = [...S.fonts.values()].filter(f => f.mode !== 'none');
   const opts = docFonts.map(f => `<option value="doc:${esc(f.id)}">${esc(f.label)}${f.mode === 'sub' ? ' (remplacée)' : ''}</option>`).join('')
+    + (UF.size ? `<optgroup label="Mes polices">${[...UF.values()].map(U => `<option value="up:${esc(U.id)}">${esc(U.label)}</option>`).join('')}</optgroup>` : '')
     + `<optgroup label="Polices standard">${STD_LIST.map(n => `<option value="std:${n}">${STD_LABEL(n)}</option>`).join('')}</optgroup>`;
   body.innerHTML = `<div class="preview" id="pv"></div><div id="pst">${status}</div>
     <div class="row"><label for="pf">Police</label><select class="field" id="pf">${opts}</select><button class="ib copy" id="pcopy" title="Copier le nom de la police" aria-label="Copier le nom de la police">${COPY_ICON}</button></div>
@@ -909,14 +1131,25 @@ function renderPanel() {
 }
 function statusHTML(c, text) {
   const spec = fontSpec(c.font), sg = segmentize(text || ' ', spec);
-  let h;
-  if (c.font.startsWith('std:')) h = `<div class="chip ok"><span class="dot"></span><div>Police standard ${STD_LABEL(spec.name)}.</div></div>`;
-  else if (!spec.info) h = `<div class="chip"><span class="dot" style="background:var(--muted)"></span><div>Analyse de la police…</div></div>`;
-  else if (spec.kind === 'doc' && !sg.missing.length) h = `<div class="chip ok"><span class="dot"></span><div><b>Police d'origine</b> : ${esc(spec.info.label)}. Le texte garde exactement le même rendu.</div></div>`;
-  else if (spec.kind === 'doc') { const m = sg.missing, pl = m.length > 1; h = `<div class="chip warn"><span class="dot"></span><div>${m.map(x => '« ' + esc(x) + ' »').join(' ')} ${pl ? 'ne sont' : "n'est"} pas dans la police intégrée (le PDF ne contient que les lettres déjà utilisées). ${pl ? 'Ils seront écrits' : 'Il sera écrit'} en ${STD_LABEL(spec.info.std)}, le reste garde ${esc(spec.info.label)}.</div></div>`; }
-  else if (spec.info.mode === 'same') h = `<div class="chip ok"><span class="dot"></span><div><b>Police d'origine</b> : ${esc(spec.info.label)} (police standard des PDF).</div></div>`;
-  else h = `<div class="chip warn"><span class="dot"></span><div>${esc(spec.info.label)} n'est pas réutilisable dans ce fichier : la police la plus proche, ${STD_LABEL(spec.info.std)}, sera utilisée.</div></div>`;
-  if (sg.unknown.length) h += `<div class="chip warn"><span class="dot"></span><div>${sg.unknown.map(x => '« ' + esc(x) + ' »').join(' ')} ne peut pas être écrit (remplacé par « ? »).</div></div>`;
+  const q = arr => arr.map(x => '« ' + esc(x) + ' »').join(' ');
+  const chip = (cls, html) => `<div class="chip ${cls}"><span class="dot"${cls ? '' : ' style="background:var(--muted)"'}></span><div>${html}</div></div>`;
+  const importBtn = '<button class="linkbtn" data-import>Importer le fichier de la police</button>';
+  let h = '';
+  if (c.font.startsWith('std:')) h = chip('ok', `Police standard ${STD_LABEL(spec.name)}.`);
+  else if (spec.kind === 'up' && !spec.info) h = chip(sg.viaStd.length ? 'warn' : 'ok', `<b>Police importée</b> : ${esc(spec.U.label)}.` + (sg.viaStd.length ? ` ${q(sg.viaStd)} absent${sg.viaStd.length > 1 ? 's' : ''} de ce fichier : écrit en ${STD_LABEL(spec.std)}.` : ''));
+  else if (!spec.info) h = chip('', 'Analyse de la police…');
+  else if (spec.kind === 'doc' || spec.kind === 'up') {
+    const label = esc(spec.info.label);
+    if (spec.kind === 'up') h = chip(sg.viaStd.length ? 'warn' : 'ok', `<b>Même police, depuis ton fichier</b> : ${esc(spec.U.label)} (le PDF ne permettait pas de réutiliser ${label}).` + (sg.viaStd.length ? ` ${q(sg.viaStd)} en ${STD_LABEL(spec.std)}.` : ''));
+    else if (!sg.missing.length) h = chip('ok', `<b>Police d'origine</b> : ${label}. Le texte garde exactement le même rendu.`);
+    else {
+      if (sg.viaUser.length) h += chip('ok', `${q(sg.viaUser)} ${sg.viaUser.length > 1 ? 'viennent' : 'vient'} de ton fichier ${esc(spec.U.label)} : même police, rendu identique.`);
+      if (sg.viaStd.length) h += chip('warn', `${q(sg.viaStd)} ${sg.viaStd.length > 1 ? 'ne sont' : "n'est"} pas dans la police intégrée (le PDF ne contient que les lettres déjà utilisées)${spec.U ? ' ni dans ton fichier' : ''} : écrit${sg.viaStd.length > 1 ? 's' : ''} en ${STD_LABEL(spec.info.std)}, le reste garde ${label}.` + (spec.U ? '' : `<br>${importBtn}`));
+    }
+  }
+  else if (spec.info.mode === 'same') h = chip('ok', `<b>Police d'origine</b> : ${esc(spec.info.label)} (police standard des PDF).`);
+  else h = chip('warn', `${esc(spec.info.label)} n'est pas réutilisable dans ce fichier : ${STD_LABEL(spec.info.std)} sera utilisée.<br>${importBtn}`);
+  if (sg.unknown.length) h += chip('warn', `${q(sg.unknown)} ne peut pas être écrit (remplacé par « ? »).`);
   return h;
 }
 async function copyText(t) {
@@ -931,10 +1164,11 @@ function renderFonts() {
   const el = $('#fontList');
   if (!list.length) { el.innerHTML = '<li class="hint">Aucun texte trouvé sur les pages chargées (PDF scanné ?).</li>'; return; }
   el.innerHTML = list.map(f => {
-    const ok = f.mode === 'orig' || f.mode === 'same';
-    return `<li><span class="dot" style="background:${ok ? 'var(--ok)' : 'var(--warn)'}"></span><div class="fl">${esc(f.label)}<small>${f.mode === 'orig' ? 'Intégrée : modifiable avec la même police' : f.mode === 'same' ? 'Standard : modifiable à l’identique' : 'Remplacée par ' + STD_LABEL(f.std)}</small></div><button class="ib copy" data-copy="${esc(f.label)}" title="Copier « ${esc(f.label)} »" aria-label="Copier le nom">${COPY_ICON}</button></li>`;
+    const ok = f.mode === 'orig' || f.mode === 'same' || !!f.user;
+    return `<li><span class="dot" style="background:${ok ? 'var(--ok)' : 'var(--warn)'}"></span><div class="fl">${esc(f.label)}<small>${f.mode === 'orig' ? 'Intégrée : modifiable avec la même police' + (f.user ? ', complétée par ton fichier' : '') : f.mode === 'same' ? 'Standard : modifiable à l’identique' : f.user ? 'Remplacée par ton fichier ' + esc(f.user.label) : 'Remplacée par ' + STD_LABEL(f.std)}</small></div><button class="ib copy" data-copy="${esc(f.label)}" title="Copier « ${esc(f.label)} »" aria-label="Copier le nom">${COPY_ICON}</button></li>`;
   }).join('');
   el.querySelectorAll('[data-copy]').forEach(b => b.onclick = () => copyText(b.dataset.copy));
+  renderUserFonts();
 }
 
 /* ================= Rechercher / remplacer ================= */
@@ -1181,6 +1415,9 @@ $('#file').onchange = e => { openFile(e.target.files[0]); e.target.value = ''; }
 $('#save').onclick = openSheet;
 $('#saveNormal').onclick = saveNormal; $('#saveFlat').onclick = saveFlat; $('#shClose').onclick = closeSheet;
 $('#sheet').onclick = e => { if (e.target.id === 'sheet') closeSheet(); };
+$('#panel').addEventListener('click', e => { if (e.target.closest('[data-import]')) { e.preventDefault(); $('#fontFile').click(); } });
+$('#fontAdd').onclick = () => $('#fontFile').click();
+$('#fontFile').onchange = e => { const fs = [...e.target.files]; e.target.value = ''; if (fs.length) addFontFiles(fs); };
 $('#fq').oninput = markFound; $('#fcase').onchange = markFound; $('#fgo').onclick = replaceAll;
 $('#fr').onkeydown = e => { if (e.key === 'Enter') replaceAll(); };
 let rz; addEventListener('resize', () => { clearTimeout(rz); rz = setTimeout(() => { if (S.fit) layoutPages(); }, 150); });
@@ -1209,7 +1446,12 @@ let dragDepth = 0;
 addEventListener('dragenter', e => { if ([...e.dataTransfer.types].includes('Files')) { dragDepth++; $('#drop').classList.add('on'); e.preventDefault(); } });
 addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('#drop').classList.remove('on'); } });
 addEventListener('dragover', e => e.preventDefault());
-addEventListener('drop', e => { e.preventDefault(); dragDepth = 0; $('#drop').classList.remove('on'); openFile(e.dataTransfer.files[0]); });
+addEventListener('drop', e => {
+  e.preventDefault(); dragDepth = 0; $('#drop').classList.remove('on');
+  const files = [...e.dataTransfer.files], fonts = files.filter(isFontFile), pdf = files.find(f => !isFontFile(f));
+  if (fonts.length) addFontFiles(fonts);
+  if (pdf) openFile(pdf);
+});
 addEventListener('beforeunload', e => { if (hasEdits(S.st) && !S.isSample) { e.preventDefault(); e.returnValue = ''; } });
 
 /* ================= Mise à jour (comme Platine) ================= */
@@ -1229,8 +1471,9 @@ checkUpdate(false);
 
 // Démarrage : un PDF d'exemple, ou un PDF ouvert via « Ouvrir avec » (PWA installée)
 if ('launchQueue' in window) launchQueue.setConsumer(async p => { if (p.files?.length) openFile(await p.files[0].getFile()); });
+fontDB.all().then(async list => { for (const f of list || []) { try { await registerUserFont(f.id, f.bytes, f.file); } catch {} } rematchFonts(); renderUserFonts(); renderFonts(); renderPanel(); }).catch(() => renderUserFonts());
 fetch('exemple.pdf').then(r => r.arrayBuffer()).then(b => { if (!S.bytes) openBytes(new Uint8Array(b), 'exemple-devis.pdf', true); }).catch(() => {});
-window.__S = S; window.__dbg = { buildPdf, cur, segmentize, fontSpec, ensureReady, openBytes, setText, changed, pushHist };
+window.__S = S; window.__dbg = { UF, addFontFiles, buildPdf, cur, segmentize, fontSpec, ensureReady, openBytes, setText, changed, pushHist };
 }
 </script>
 </body>
